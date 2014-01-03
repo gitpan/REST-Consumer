@@ -1,0 +1,13 @@
+
+
+This archive contains the distribution REST-Consumer,
+version 0.08:
+
+  a generic client for talking to restful web services
+
+This software is copyright (c) 2012 by Chris Becker <cbecker@shutterstock.com>, Travis Beck <travis@shutterstock.com>.
+
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.
+
+

@@ -1,11 +1,15 @@
 Changes
+LICENSE
 MANIFEST
+META.json
+META.yml
 Makefile.PL
+README
 README.md
+dist.ini
 ignore.txt
 lib/REST/Consumer.pm
 lib/REST/Consumer/RequestException.pm
-t/manifest.t
 t/00-load.t
 t/01_basic_GET_interface.t
 t/02_basic_POST_interface.t
@@ -14,5 +18,4 @@ t/04_internals.t
 t/05_configuration.t
 t/06_exceptions.t
 t/boilerplate.t
-META.yml                                 Module YAML meta-data (added by MakeMaker)
-META.json                                Module JSON meta-data (added by MakeMaker)
+t/manifest.t

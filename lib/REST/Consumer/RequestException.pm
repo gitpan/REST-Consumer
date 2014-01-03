@@ -1,4 +1,7 @@
 package REST::Consumer::RequestException;
+{
+  $REST::Consumer::RequestException::VERSION = '0.08';
+}
 
 # an exception is always true
 use overload bool => sub {1}, '""' => 'as_string', fallback => 1;
