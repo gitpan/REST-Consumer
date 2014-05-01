@@ -7,7 +7,7 @@ use Data::Dumper;
 use REST::Consumer;
 use HTTP::Response;
 use LWP::UserAgent;
-use Test::More tests => 2;
+use Test::More tests => 3;
 
 package LWP::UserAgent;
 use Data::Dumper;
@@ -58,4 +58,16 @@ $get_result = $client->get(
 
 is $get_result, 'http://localhost/test/2001/question/yep?field3=%E8%8A%B1',
 	'GET request supports sinatra-like colon values';
+
+$get_result = $client->get(
+	path => '/test/:test_id/question/:answer',
+	params => {
+		test_id => 2001,
+		answer  => 'Test%sing',
+		field3  => 'Field%8dthree',
+	},
+);
+
+is $get_result, 'http://localhost/test/2001/question/Test%25sing?field3=Field%258dthree',
+	'GET request works when there are percents in values';
 

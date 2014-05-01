@@ -1,36 +1,35 @@
 package REST::Consumer;
-{
-  $REST::Consumer::VERSION = '0.08';
-}
-# ABSTRACT: a generic client for talking to restful web services
+# a generic client for talking to restful web services
 
 use strict;
 use warnings;
 
-use Carp qw(croak);
-use LWP::UserAgent;
+use Carp qw(cluck);
+use LWP::UserAgent::Paranoid;
 use URI;
 use JSON::XS;
 use HTTP::Request;
 use HTTP::Headers;
 use File::Path qw( mkpath );
+use REST::Consumer::Dispatch;
 use REST::Consumer::RequestException;
+use REST::Consumer::PermissiveResolver;
+use Time::HiRes qw(usleep);
+
+our $VERSION = '1.00';
 
 my $global_configuration = {};
 my %service_clients;
 my $data_path = $ENV{DATA_PATH} || $ENV{TMPDIR} || '/tmp';
+my $throw_exceptions = 1;
 
 # make sure config gets loaded from url every 5 minutes
 my $config_reload_interval = 60 * 5;
 
 sub throw_exceptions {
-	my ($self, $value) = @_;
-        if (@_ == 2) {
-          $self->{throw_exceptions} = $value;
-          return $self;
-        } else {
-          return $self->{throw_exceptions};
-        }
+	my ($class, $value) = @_;
+	$throw_exceptions = $value if defined $value;
+	return $throw_exceptions;
 }
 
 sub configure {
@@ -129,32 +128,34 @@ sub service {
 
 sub _validate_client_config {
 	my ($config) = @_;
-        our $VERSION;
 	my $valid = {
-		host    => $config->{host},
-		url     => $config->{url},
-		port    => $config->{port},
+		host       => $config->{host},
+		url        => $config->{url},
+		port       => $config->{port},
+		(defined $config->{ua} ? (ua => $config->{ua}) : ()),
 
 		# timeout on requests to the service
-		timeout => $config->{timeout} // 10,
+		timeout => $config->{timeout} || 10,
 
 		# retry this many times if we don't get a 200 response from the service
 		retry   => exists $config->{retry} ? $config->{retry} : exists $config->{retries} ? $config->{retries} : 0,
+
+		# delay by this many ms before every retry 
+		retry_delay   => $config->{retry_delay} || 0, 
 
 		# print some extra debugging messages
 		verbose => $config->{verbose} || 0,
 
 		# enable persistent connection
-		keep_alive => $config->{keep_alive} // 1,
+		keep_alive => $config->{keep_alive} || 1,
 
 		agent => $config->{user_agent} || "REST-Consumer/$VERSION",
 
 		auth => $config->{auth} || {},
-                throw_exceptions =>  $config->{throw_exceptions} // 1,
 	};
 
 	if (!$valid->{host} and !$valid->{url}) {
-		croak "Either host or url is required";
+		die "Either host or url is required";
 	}
 
 	return $valid;
@@ -187,19 +188,40 @@ sub port {
 
 sub timeout {
 	my ($self, $timeout) = @_;
-	$self->{timeout} = $timeout if defined $timeout;
+	if (defined $timeout) {
+		$self->{timeout} = $timeout;
+		$self->apply_timeout($self->{_user_agent}) if $self->{_user_agent};
+	}
 	return $self->{timeout};
+}
+
+sub retry {
+	my ($self, $retry) = @_;
+	$self->{retry} = $retry if defined $retry;
+	return $self->{retry};
+}
+
+sub retry_delay {
+	my ($self, $retry_delay) = @_;
+	$self->{retry_delay} = $retry_delay if defined $retry_delay;
+	return $self->{retry_delay};
 }
 
 sub keep_alive {
 	my ($self, $keep_alive) = @_;
-	$self->{keep_alive} = $keep_alive if defined $keep_alive;
+	if (defined $keep_alive) {
+		$self->{keep_alive} = $keep_alive;
+		$self->apply_keep_alive($self->{_user_agent}) if $self->{_user_agent};
+	}
 	return $self->{keep_alive};
 }
 
 sub agent {
 	my ($self, $agent) = @_;
-	$self->{agent} = $agent if defined $agent;
+	if (defined $agent) {
+		$self->{agent} = $agent;
+		$self->apply_agent($self->{_user_agent}) if $self->{_user_agent};
+	}
 	return $self->{agent};
 }
 
@@ -215,17 +237,60 @@ sub last_response {
 
 sub get_user_agent { user_agent(@_) }
 
+sub apply_timeout {
+	my ($self, $ua) = @_;
+	if ($ua->can('request_timeout')) {
+		# $ua is a LWP::UserAgent::Paranoid or some other thing that honors request_timeout
+		$ua->request_timeout($self->timeout);
+	} else {
+		# $ua is vanilla LWP or a subclass, use the inferior timeout method
+		$ua->timeout($self->timeout);
+	}
+}
+
+sub apply_agent {
+	my ($self, $ua) = @_;
+	$ua->agent($self->agent);
+}
+
+sub apply_keep_alive {
+	my ($self, $ua) = @_;
+	if ($ua->can('keep_alive')) {
+		# $ua is some well-behaved user-provided object
+		$ua->keep_alive($self->keep_alive);
+	} elsif ($ua->can('conn_cache')) {
+		# $ua is an LWP::UserAgent - unfortunately there's no ->keep_alive method exposed by LWP::UserAgent,
+		# so we just do what its constructor does to set up keep-alive.
+		if ($self->keep_alive) {
+			$ua->conn_cache({total_capacity => $self->keep_alive});
+		} else {
+			$ua->conn_cache(undef);
+		}
+	} else {
+		# no clue how to handle things; sorry charlie.
+		cluck "Don't know how to make a user-specified user agent object of type ${\ref($ua)} honor your keep_alive request.\n";
+	}
+}
+
+
 sub user_agent {
 	my $self = shift;
 	return $self->{_user_agent} if defined $self->{_user_agent};
 
-	# if keep alive is enabled, create a connection that persists globally
-	my @lwp_args = (
-		timeout => $self->timeout(),
-		agent   => $self->agent(),
-		($self->keep_alive ? ( keep_alive => $self->keep_alive ) : ()),
-	);
-	my $user_agent = LWP::UserAgent->new(@lwp_args);
+	my $user_agent = delete $self->{ua};
+	unless ($user_agent) {
+		# Paranoid's default resolver blocks access to private IP addresses.
+		# We don't want to do any such thing by default, so provide a more permissive one.
+		$user_agent = LWP::UserAgent::Paranoid->new(
+			resolver => REST::Consumer::PermissiveResolver->new
+		);
+	}
+
+	# bubble our ->timeout, ->agent, and ->keep_alive args into this $user_agent object.
+	# if keep alive is enabled, we create a connection that persists globally
+	$self->apply_timeout($user_agent);
+	$self->apply_agent($user_agent);
+	$self->apply_keep_alive($user_agent);
 
 	# handle auth headers
 	my $default_headers = HTTP::Headers->new;
@@ -251,7 +316,7 @@ sub get_service_base_url {
 	my $port = $self->{port};
 	$host =~ s|/$||;
 
-	return sprintf("%s$host%s", $host =~ m|^https?://| ? '' : 'http://', $port ? ":$port" : '');
+	return ( ($host =~ m|^https?://| ? '' : 'http://' ) . $host . ($port ? ":$port" : '') );
 }
 
 # return a URI object containing the url and any query parameters
@@ -266,10 +331,10 @@ sub get_uri {
 
 	# replace any sinatra-like url tokens with their param value
 	if (ref $params eq 'HASH') {
-		$path =~ s/\:(\w+)/delete $params->{$1} || $1/eg;
+		$path =~ s/\:(\w+)/exists $params->{$1} ? URI::Escape::uri_escape(delete $params->{$1}) : $1/eg;
 	}
 
-	my $uri = URI->new( sprintf("%s/$path",$self->get_service_base_url()) );
+	my $uri = URI->new( $self->get_service_base_url() . "/$path" );
 	# accept key / values in hash or array format
 	my @params = ref($params) eq 'HASH' ? %$params : ref($params) eq 'ARRAY' ? @$params : ();
 	$uri->query_form( @params );
@@ -376,7 +441,8 @@ sub get_response {
 	my $method   = $args{method} or die 'method is a required argument';
 	my $content_type = $args{content_type};
 	my $retry_count = defined $args{retry} ? $args{retry} : $self->{retry};
-
+	my $process_response = $args{process_response} || 0;
+	
 	my $req = $self->get_http_request(
 		path     => $path,
 		content  => $content,
@@ -386,46 +452,61 @@ sub get_response {
 		content_type => $content_type,
 	);
 
+	my ($result, $flow_control);
 	# run the request
-	my $response = $self->get_response_for_request(http_request => $req, retry => $retry_count);
-	return $response;
+	my $try = 0;
+	while ($try <= $retry_count) {
+		$try++;
+		my $response = $self->get_response_for_request(http_request => $req);
+
+		# Okay, now do processing like retries, handlers, and whatnot.
+		my $dispatch = REST::Consumer::Dispatch->new(
+			handlers => $args{handlers},
+			default_is_raw => ($process_response ? 0 : 1),
+			debugger => $self->debugger,
+		);
+
+		($flow_control, $result) = $dispatch->handle_response(
+			request => $req,
+			response => $response,
+			attempt => $try,
+		);
+		
+		last unless $flow_control eq 'retry';
+		if ($self->retry_delay) {
+			$self->debug(sprintf ("Sleeping %d ms before retrying...", $self->retry_delay));
+			usleep (1000 * $self->retry_delay);
+		}
+	}
+
+	if ($flow_control eq 'succeed') {
+		# $result is an arrayref of the value(s) returned
+		#  by a handler (possibly the default handler).
+		if (scalar @$result == 1) {
+			return $result->[0];
+		} else {
+			return @$result;
+		}
+	} else {
+		# $flow_control could be 'succeed' or 'retry'
+		#   (but we ran out of retries)
+		# $result = a failure object
+		if ($self->throw_exceptions) {
+			$result->throw;
+		} else {
+			return $result;
+		}
+	}
 }
 
 # do everything that get_response does, but return the deserialized content in the response instead of the response object
 sub get_processed_response {
 	my $self = shift;
-	my $response = $self->get_response(@_);
-	# convert json content to perl
-	my $response_content = $self->deserialize_content($response);
-
-	return $response_content;
-}
-
-sub deserialize_content {
-	my ($self, $response) = @_;
-	return if !$response;
-
-	# parse response content, if present
-	my $response_content;
-	my $content_type = $response->header('Content-Type');
-	if ($content_type && $content_type =~ m|.+/json|) {
-		eval {
-			$response_content = JSON::XS::decode_json($response->decoded_content() );
-			1;
-		} or do {
-			# might or might not be an error.  e.g. if content is empty or is just a string
-			$self->debug(sprintf("failed to parse json response: %s\n%s\n",
-				$response->decoded_content(),
-				$@,
-			));
-			$response_content = $response->decoded_content();
-		};
-	} else {
-		# if we can' determine content type, return raw data
-		$response_content = $response->decoded_content();
-	}
-
-	return $response_content;
+	my $response = $self->get_response(
+		process_response => 1,
+		@_,
+	);
+	return $response;
 }
 
 
@@ -438,57 +519,12 @@ sub get_response_for_request {
 
 	my $user_agent = $self->user_agent;
 	my $response = $user_agent->request($http_request);
-        $self->debug_n(2, "REQUEST:<" . $http_request->as_string . ">");
 
 	$self->{_last_request} = $http_request;
 	$self->{_last_response} = $response;
 	$self->debug( sprintf('Got response: %s', $response->code()));
-        $self->debug_n(2,  "RESPONSE:<" . $response->as_string . ">");
 
-	if ($response and $response->is_success()) {
-		return $response;
-	}
-
-	# handle failure
-
-	# don't bother retrying on certain errors (but err on the side of retrying for others)
-	# 403 Forbidden
-	# 404 Not Found
-	# 405 Method not allowed
-	# 413 Request Entity to large
-	if (!$args{retry} or scalar grep {$response->code() == $_} qw(403 404 405 413)) {
-		return unless $self->throw_exceptions;
-		REST::Consumer::RequestException->throw(
-			request  => $http_request,
-			response => $response,
-		);
-	}
-
-
-	$args{_attempts} ||= 0;
-	$args{_attempts}++;
-
-	# die if we've exceeded the retry limit
-	if ($args{_attempts} > $args{retry}) {
-		return unless $self->throw_exceptions;
-		REST::Consumer::RequestException->throw(
-			request  => $http_request,
-			response => $response,
-			attempts => $args{_attempts},
-		);
-#		croak sprintf("Request Failed after %s retries: %s %s\n %s %s\n%s\n",
-#			$args{_attempts},
-#			$http_request->method(),
-#			$http_request->uri()->as_string(),
-#			$response->code(),
-#			defined($response->message()) ? $response->message() : '',
-#			$self->{verbose} ? $response->content() : '',
-#		);
-	}
-	printf STDERR "Error (%s) %s. Retrying.\n", $response->code(), $response->message() || '';
-
-	# retry this request with update retry count
-	return $self->get_response_for_request(%args);
+	return $response;
 }
 
 sub head {
@@ -513,22 +549,24 @@ sub delete {
 
 sub put {
 	my $self = shift;
-	return $self->get_response(@_, method => 'PUT');
+	return $self->get_processed_response(@_, method => 'PUT');
 }
 
+
+sub debugger {
+	my $self = shift;
+	return sub {} unless $self->{verbose};
+	return sub {
+		local $\ = "\n";
+		print STDERR @_;
+	}
+}
 
 # print status messages to stderr if running in verbose mode
-sub debug_n {
-	my ($self, $level, @messages) = @_;
-	return unless $self->{verbose} >= $level;
-	local $\ = "\n";
-	print STDERR @messages;
+sub debug {
+	shift->debugger->(@_);
 }
 
-sub debug {
-  my $self = shift;
-  $self->debug_n(1, @_);
-}
 
 1;
 __END__
@@ -555,13 +593,15 @@ To make a request, create an instance of the client and then call the get(), pos
 
 	# Optional parameters:
 	my $client = REST::Consumer->new(
-		host       => 'service.somewhere.com',
-		port       => 80,
-		timeout    => 60, (default 10)
-		retry      => 10, (default 3)
-		verbose    => 1, (default 0)
-		keep_alive => 1, (default 0)
-		agent      => 'Service Monkey', (default REST-Consumer/$VERSION)
+		host        => 'service.somewhere.com',
+		port        => 80,
+		timeout     => 60, (default 10)
+		retry       => 10, (default 3)
+		retry_delay => 100, (ms, default 0)
+		verbose     => 1, (default 0)
+		keep_alive  => 1, (default 0)
+		agent       => 'Service Monkey', (default REST-Consumer/$VERSION)
+		ua          => My::UserAgent->new,
 		auth => {
 			type => 'basic',
 			username => 'yep',
@@ -624,7 +664,7 @@ Send a POST request with the given path, params, and content.  The content must 
 	my $deserialized_result = $client->post(
 		path => '/path/to/resource',
 		headers => [
-			'x-custom-header' => 'monkeys',	
+			'x-custom-header' => 'monkeys',
 		],
 		content => { field => value }
 	);
@@ -645,7 +685,7 @@ Send a DELETE request to the given path with the given arguments
 
 =item B<get_response> (path => PATH, params => [key => value, key => value], headers => [key => value,....], content => {...}, method => METHOD )
 
-Send a request with path, params, and content, using the specified method, and get a response object back  
+Send a request with path, params, and content, using the specified method, and get a response object back
 
 	my $response_obj = $client->get_response(
 		method => 'GET',

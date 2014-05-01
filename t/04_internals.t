@@ -43,17 +43,15 @@ use Test::More tests => 12;
 
 # test deserialization of json content
 {
-	my $client = REST::Consumer->new(
-		port => 80,
-		host => 'localhost',
-		verbose => 1,
-	);
-
 	my $response = HTTP::Response->new(200);
 	$response->content_type('application/json');
 	$response->content('{"10":{"cat":"5","dog":"10"}}');
 
-	my $deserialized_content = $client->deserialize_content($response);
+	my $invocation = REST::Consumer::HandlerInvocation->new(
+		response => $response,
+	);
+	
+	my $deserialized_content = $invocation->parsed_response;
 
 	is_deeply($deserialized_content,
 			{
@@ -63,8 +61,7 @@ use Test::More tests => 12;
 				}
 			},
 			"json data parsed"
-		);
-
+	);
 }
 
 

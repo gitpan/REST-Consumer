@@ -1,4 +1,4 @@
-#! /usr/bin/env perl
+#!/usr/bin/env perl
 # test that client retries on bad responses
 use strict;
 use warnings;
@@ -7,7 +7,9 @@ use Data::Dumper;
 use REST::Consumer;
 use HTTP::Response;
 use LWP::UserAgent;
-use Test::More tests => 10;
+use Test::More tests => 14;
+use Time::HiRes qw(time);
+use Test::Resub qw(resub);
 
 my $request_count = 0;
 
@@ -57,6 +59,45 @@ package main;
 
 	is $request_count, 1,
 		'failed request resulted in only a single request by default';
+}
+
+
+$request_count = 0;
+{
+	my $client = REST::Consumer->new(
+		port => 80,
+		host => 'localhost',
+		retries => 5,
+		retry_delay => 1000,
+	);
+
+	is $client->retry_delay, 1000, 'retry_delay not successfully set';
+	# test the interface.  the client will call the mocked LWP::UserAgent::request method above
+	# and return the uri string as its response content
+
+	my $start_time = time();
+	my $error;
+	eval {
+		my $post_result = $client->post(
+			path => '/test/path/to/resource/',
+			body => 'test',
+		);
+		1;
+	} or do {
+		chomp($error = $@);
+	};
+
+	like(
+		$error,
+		qr/^Request Failed after 6 attempts: POST http:\/\/localhost:80\/test\/path\/to\/resource\/ -- 500 test error/,
+		'failed request was retried 5 times (6 total attempts) by redefining retries',
+	);
+
+	is $request_count, 6,
+		'failed request with retry resulted in 6 total requests';
+	my $total_s_elapsed = time() - $start_time;
+	ok ($total_s_elapsed >= 5,
+		"Expected number of seconds were not slept! Got $total_s_elapsed");
 }
 
 $request_count = 0;
