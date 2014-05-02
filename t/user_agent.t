@@ -15,6 +15,8 @@ use Test::Resub qw(resub);
 
 	sub can { 1 }
 
+	sub default_headers { shift->{default_headers} ||= HTTP::Headers->new }
+
 	sub AUTOLOAD {
 		my ($self, @args) = @_;
 		my ($method) = our $AUTOLOAD =~ m{.*:(.*)};
@@ -37,7 +39,7 @@ is( ref($user_agent), ref($mock_user_agent), 'we got back the expected user agen
 
 my $expected_header = HTTP::Headers->new; $expected_header->header(accept => 'application/json');
 is_deeply( +{%$mock_user_agent}, +{
-	default_headers => [[$expected_header]],
+	default_headers => $expected_header,
 	request_timeout => [[10]],
 	agent => [['retention-single-foot']],
 	keep_alive => [[3864]],

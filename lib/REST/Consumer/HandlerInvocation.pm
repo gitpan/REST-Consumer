@@ -5,6 +5,10 @@ use warnings;
 
 use REST::Consumer::ResponseException;
 
+# This is an object which is passed to a coderef in the handlers => {}
+# hash. It represents an invocation of a particular response-code handler.
+#
+# Your code should never need to instantiate this class itself.
 sub new {
 	my ($class, %args) = @_;
 	my $self = (bless {%args} => $class);
@@ -12,7 +16,8 @@ sub new {
 	return $self;
 }
 
-# Magic values you can return to change the execution flow:
+# Here are elments of the public API:
+# Magic values your code can return to change the execution flow:
 sub default {
 	my ($self) = @_;
 	return REST::Consumer::HandlerFlow::Default->new;
@@ -35,10 +40,13 @@ sub fail {
 }
 
 
-
+# Accessors that can provide information to your handler:
 sub request { shift->{request} }
 sub response { shift->{response} }
-sub attempt { shift->{attempt} }
+sub attempt { shift->{attempt} } # e.g. attempt #2
+
+# ->parsed_response throws an exception if the response is not parseable.
+# You might want to ask whether ->response_parseable.
 sub parsed_response {
 	my ($self) = @_;
 	$self->attempt_content_deserialization;
@@ -52,18 +60,22 @@ sub parsed_response {
 	return $self->{parsed_response};
 }
 
+# True iff the response was parseable.
 sub response_parseable {
 	my ($self) = @_;
 	$self->attempt_content_deserialization;
 	return $self->{response_parseable};
 }
 
+# This is never parsed, but it is decoded.
 sub response_body {
 	my ($self) = @_;
 	$self->attempt_content_deserialization;
 	return $self->{response_body};
 }
 
+
+# This is a private API. Do not invoke.
 sub attempt_content_deserialization {
 	my ($self) = @_;
 	return if exists $self->{response_body};
@@ -92,6 +104,14 @@ sub debug {
 	shift->{debugger}->(@_);
 }
 
+# These are part of a private API. You should not instantiate them.
+# Instead access them in the scope of a handler like so:
+# 4xx => sub {
+#   my ($h) = @_;
+#   return $h->default; # or
+#   return $h->retry;   # or
+#   return $h->fail;
+# }
 package REST::Consumer::HandlerFlow::Base;
 sub new {
 	my ($self, %args) = @_;

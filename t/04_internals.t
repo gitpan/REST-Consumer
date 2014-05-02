@@ -8,7 +8,7 @@ use Data::Dumper;
 use REST::Consumer;
 use HTTP::Response;
 use LWP::UserAgent;
-use Test::More tests => 12;
+use Test::More tests => 14;
 
 
 # verify that the base url of the service is assembled correctly
@@ -90,6 +90,13 @@ my $keep_alive_ua;
 
 	my $ua = $no_keep_alive_client->get_user_agent();
 	is(defined($ua->conn_cache()), 1,'lwp keep_alive is on by default');
+}
+
+{
+	my $client = REST::Consumer->new( port => 80, host => 'localhost', timeout => 123);
+	my $ua = $client->get_user_agent();
+	ok defined $ua->default_headers->header('User-Agent'), 'has a user agent defined';
+	is $ua->default_headers->header('Accept'), 'application/json', 'has accept header defined';
 }
 
 # verify that useragent is globally available when keep alive is active

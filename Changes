@@ -1,5 +1,10 @@
 Revision history for REST::Consumer
 
+1.01 2014-03-04
+  * better documentation on response handlers
+	* fix default_headers behavior which ensures that the UA is set properly
+	* fix hash randomization issues in test suite; tests should pass on 5.18
+
 1.00 2014-01-22
   * Response handlers: a new strategy for reacting to your API's responses.
 

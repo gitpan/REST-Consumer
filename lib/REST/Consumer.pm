@@ -16,7 +16,7 @@ use REST::Consumer::RequestException;
 use REST::Consumer::PermissiveResolver;
 use Time::HiRes qw(usleep);
 
-our $VERSION = '1.00';
+our $VERSION = '1.01';
 
 my $global_configuration = {};
 my %service_clients;
@@ -293,14 +293,13 @@ sub user_agent {
 	$self->apply_keep_alive($user_agent);
 
 	# handle auth headers
-	my $default_headers = HTTP::Headers->new;
+	my $default_headers = $user_agent->default_headers;
 	$default_headers->header( 'accept' => 'application/json' );
 
 	if (exists $self->{auth} && $self->{auth}{type} && $self->{auth}{type} eq 'basic') {
 		$default_headers->authorization_basic($self->{auth}{username}, $self->{auth}{password});
 	}
 
-	$user_agent->default_headers($default_headers);
 	$self->{_user_agent} = $user_agent;
 	return $user_agent;
 }
@@ -581,8 +580,8 @@ This module provides an interface that encapsulates building an http request, se
 
 =head1 Usage
 
-To make a request, create an instance of the client and then call the get(), post(), put(), or delete() methods
-
+To make a request, create an instance of the client and then call the get(), post(), put(), or delete() methods.
+(Alternatively, call ->get_processed_response() and supply your own method name.)
 
 	# Required parameters:
 	my $client = REST::Consumer->new(
@@ -639,7 +638,91 @@ the 'params' arg can be a hash ref or array ref, depending on whether you need m
 		]
 	);
 
+If ->get encounters an error code (400, 500, etc) it will treat this as an exception, and raise it
+(or return undef if $REST::Consumer::raise_exceptions has been explicitly set to 0 - but you shouldn't
+do this; you should either wrap the entire invocation in an eval block, or use handlers below to
+control the way REST::Consumer responds to exceptions.)
 
+By default, ->get will attempt to deserialize the response body, and the deserialized structure will be its
+return value. If the body cannot be deserialized (e.g. if it is a plaintext document) the body will be returned
+(decoded from whatever transfer encoding it may have been encoded with, but not otherwise deserialized).
+
+You can also specify a 'handlers' argument to ->get. This argument should be a hashref of <status, coderef>
+pairs. Handlers are used to react to a particular HTTP response code or set of response codes. If a handler
+matches the HTTP response, the return value of ->get will be the return value of that handler.
+This allows you to return a data structure of your choice, even in case of HTTP errors.
+
+The status codes consist of either 3-digit scalars, such as 404 or '418', or a three-character response class,
+such as '2xx' or '5xx'. If an HTTP response returns a status code, a handler with that code will be looked for;
+if none is found, a handler with a wildcard code will then be looked for. If neither is present, execution
+will proceed as specified above.
+
+A handler coderef is invoked with a single argument representing a handle to the handler's invocation --
+$h in all the examples below. $h has several methods which can be used to access the request and response.
+The handler should return data, which will be presented as the return value of the ->get operation.
+
+A handler can also return flow-control objects. If a flow-control object is returned instead of a regular
+object or scalar, the flow of the request processing will be altered. These flow-control objects are
+instantiated via methods on $h; valid flow control objects are $h->retry, $h->fail, and $h->default.
+For instance, a handler can return $h->default to proceed as if the handler code had not been specified.
+In that case, the value returned by ->get will be the response's deserialized content (or an exception,
+depending on the request's status code).
+
+Here is an example of handlers being specified and returning values.
+
+  # Obtain a welcome message from /welcome-message.
+  my $custom_deserialized_result = $client->get(
+     path => '/welcome-message',
+     ...
+     handlers => {
+       2xx => sub {
+         my ($h) = @_; # $h is a response handler invocation.
+         if ($h->response_parseable) { # true if it's pareseable JSON
+           return $h->parsed_response->{message};
+           # ->parsed_response will throw an exception
+           # if the response is not parseable
+         } else {
+           if ($h->response->content_type =~ qr{text/plain}) {
+             # ->response_body is the unparsed body.
+             # it is always available.
+             return $h->response_body;
+           } else {
+             return $h->fail;
+             # Returning $h->fail will invoke the standard failure mechanism,
+             #   which will raise an exception or return undef, depending on
+             #   the package configuration ($REST::Consumer::throw_exceptions
+             #   is true by default - you ought to leave it that way, and use
+             #   handlers to deal with exceptions, instead).
+           }
+         }
+       },
+       403 => sub { return 'Go away!'; },
+       404 => sub { 'You're traveling through another dimension,' .
+                    ' a dimension not only of sight and sound but of mind.' },
+       418 => sub { return "I'm a little teapot, short and stout!" },
+       420 => sub {  # (nonstandard status code / Twitter rate limiting).
+         my ($h) = @_;
+         return $h->retry;
+         # Returning $h->retry will cause the request to be retried.
+         # This operation respects the number of retries and the retry delay
+         # specified at the REST::Consumer instantiation.
+       },
+       2xx => sub {
+         my ($h) = @_;
+
+         # (assuming a $self from enclosing scope)
+         # ->response and ->request are HTTP::Response and HTTP::Request objects
+         $self->log("Welcome message successfully located for %s", $h->request->uri);
+
+         # Returning $h->default will resume normal REST::Consumer processing.
+         # Depending on what sort of response this is, that may result in
+         #   returning the response's content, retrying the request, or throwing
+         #   an exception (or returning undef, if $REST::Consumer::ThrowExceptions
+         #   is false.)
+         return $h->default;
+       },
+     },
+  );
 
 
 =item B<post> (path => PATH, params => [key => value, key => value], content => {...} )
@@ -669,10 +752,11 @@ Send a POST request with the given path, params, and content.  The content must 
 		content => { field => value }
 	);
 
+->post() returns the deserialized result by default. It also allows you to specify handlers. See the documentation for ->get().
 
 =item B<delete> (path => PATH, params => [])
 
-Send a DELETE request to the given path with the given arguments
+Send a DELETE request to the given path with the given arguments.
 
 	my $result = $client->delete(
 		path => '/path/to/resource',
@@ -682,10 +766,16 @@ Send a DELETE request to the given path with the given arguments
 		]
 	);
 
+->delete() returns the deserialized result by default. It also allows you to specify handlers. See the documentation for ->get().
 
-=item B<get_response> (path => PATH, params => [key => value, key => value], headers => [key => value,....], content => {...}, method => METHOD )
+=item B<get_response> (path => PATH, params => [key => value, key => value], headers => [key => value,....], content => {...}, handlers => {...}, method => METHOD )
 
-Send a request with path, params, and content, using the specified method, and get a response object back
+Send a request with path, params, and content, using the specified method, e.g. POST.
+But you already have a method ->post, so maybe the method is something like PROPFIND, BREW, or WHEN.
+
+By default, ->get_response will return an HTTP::Response object.
+->get_response also allows you to specify handlers.
+See the documentation for ->get().
 
 	my $response_obj = $client->get_response(
 		method => 'GET',
@@ -697,17 +787,25 @@ Send a request with path, params, and content, using the specified method, and g
 			field => value,
 			field2 => value2,
 		],
+    handlers => {},
 	);
 
+(N.B. If specifying method the methods BREW or WHEN, it is recommended that you
+ supply a handler for the HTTP 418 response. See RFC 2324 for more information.)
 
+=item B<get_processed_response> (path => PATH, params => [key => value, key => value], headers => [key => value,....], content => {...}, handlers => {...}, method => METHOD)
 
-=item B<get_processed_response> (path => PATH, params => [key => value, key => value], headers => [key => value,....], content => {...}, method => METHOD)
+Send a request with path, params, and content, using the specified method, and get the deserialized content back.
+->get_processed_response() also allows you to specify handlers. See the documentation for ->get().
 
-Send a request with path, params, and content, using the specified method, and get the deserialized content back
+If handlers for the resposnse have been specified, the return value will be whatever the handler returns.
+If the content is JSON, it will be parsed. If the content is not JSON, it will be returned as a string.
 
 =item B<get_http_request> ( path => PATH, params => [PARAMS], headers => [HEADERS], content => [], method => '' )
 
-get an HTTP::Request object for the given input
+Get an HTTP::Request object for the given input.
+
+(The request will not actually be issued.)
 
 =back
 

@@ -7,7 +7,8 @@ use Data::Dumper;
 use REST::Consumer;
 use HTTP::Response;
 use LWP::UserAgent;
-use Test::More tests => 4;
+use URI::QueryParam;
+use Test::More tests => 5;
 
 package LWP::UserAgent;
 use Data::Dumper;
@@ -39,8 +40,11 @@ my $post_result = $client->get(
 	}
 );
 
-is $client->last_request->uri->as_string, "http://localhost:80/test/path/to/resource?qux=baz&foo=bar",
-	'GET with query string params gets constructed correctly';
+my $uri = $client->last_request->uri;
+is $uri->path, '/test/path/to/resource',
+	'GET with query string params has correct path';
+is_deeply $uri->query_form_hash, { qux => 'baz', foo => 'bar' },
+	'GET with query string params has correct params';
 
 # test the interface.  the client will call the mocked LWP::UserAgent::request method above
 # and return the uri string as its response content
