@@ -22,7 +22,7 @@ WriteMakefile(
         'LWP::UserAgent::Paranoid' => 0.94,
         'JSON::XS'             => 0,
         'File::Path'           => 1.08,
-        'Time::HiRes'          => 0,
+        'Time::HiRes'          => 1.9726,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean               => { FILES => 'REST-Consumer-*' },

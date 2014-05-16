@@ -4,7 +4,7 @@
       "Chris Becker <cbecker@shutterstock.com>, Travis Beck <travis@shutterstock.com>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.98, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.76, CPAN::Meta::Converter version 2.132620",
    "license" : [
       "perl_5"
    ],
@@ -40,11 +40,11 @@
             "Test::CheckManifest" : "0.9",
             "Test::More" : "0",
             "Test::Resub" : "2.01",
-            "Time::HiRes" : "0",
+            "Time::HiRes" : "1.9726",
             "URI" : "0"
          }
       }
    },
    "release_status" : "stable",
-   "version" : "1.01"
+   "version" : "1.02"
 }

@@ -1,5 +1,10 @@
 Revision history for REST::Consumer
 
+1.02 2014-05-16
+  * Don't return erroneous values for last_request and last_response if a
+	  request throws an exception due to a timeout.
+	* Upgrade Time::HiRes dependency so that retry delays work on NetBSD.
+
 1.01 2014-03-04
   * better documentation on response handlers
 	* fix default_headers behavior which ensures that the UA is set properly

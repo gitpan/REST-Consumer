@@ -16,7 +16,7 @@ use REST::Consumer::RequestException;
 use REST::Consumer::PermissiveResolver;
 use Time::HiRes qw(usleep);
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
 
 my $global_configuration = {};
 my %service_clients;
@@ -515,11 +515,12 @@ sub get_processed_response {
 sub get_response_for_request {
 	my ($self, %args) = @_;
 	my $http_request = $args{http_request};
+	$self->{_last_request} = $http_request;
+	$self->{_last_response} = undef;
 
 	my $user_agent = $self->user_agent;
 	my $response = $user_agent->request($http_request);
 
-	$self->{_last_request} = $http_request;
 	$self->{_last_response} = $response;
 	$self->debug( sprintf('Got response: %s', $response->code()));
 

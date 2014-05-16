@@ -6,7 +6,7 @@ use warnings;
 use REST::Consumer;
 use HTTP::Response;
 use LWP::UserAgent;
-use Test::More tests => 15;
+use Test::More tests => 18;
 
 package LWP::UserAgent;
 use Data::Dumper;
@@ -21,6 +21,8 @@ sub request {
 		$response->request($http_request);
 		$response->content_type('application/json');
 		return $response;
+	} elsif ( $http_request->uri->as_string =~ /\/timeout$/) {
+		die 'timeout';
 	} else {
 		my $response = HTTP::Response->new(200);
 		$response->content( $http_request->uri->as_string );
@@ -49,7 +51,7 @@ is(REST::Consumer->throw_exceptions, 1, "by default we throw exceptions");
 			body => {
 				foo => 'bar',
 			},
-			timeout => 5,
+			timeout => 1,
 		);
 	};
 	my $exception = $@;
@@ -61,6 +63,23 @@ is(REST::Consumer->throw_exceptions, 1, "by default we throw exceptions");
 
 	isa_ok $exception->response, "HTTP::Response",
 		"exception object has a real response";
+}
+
+{
+	my $response;
+	eval {
+		$response = REST::Consumer->service('foo')->post(
+			path => '/timeout',
+			body => {
+				foo => 'bar',
+			},
+			timeout => 5,
+		);
+	};
+	my $exception = $@;
+	ok $exception, "throws exception by default";
+	isa_ok(REST::Consumer->service('foo')->last_request, 'HTTP::Request', 'got request');
+	is(REST::Consumer->service('foo')->last_response, undef, 'no response for timeout');
 }
 
 {
